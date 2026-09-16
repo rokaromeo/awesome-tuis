@@ -4,6 +4,17 @@ from pathlib import Path
 
 VALID = {'.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp', '.ico'}
 
+# Rules for filtering irrelevant images (icons, logos, decorative assets).
+# Add new rules here as they are discovered from user examples.
+def is_irrelevant(filename):
+    stem = re.sub(r'\.(png|jpe?g|gif|svg|webp|bmp|ico)$', '', filename.lower())
+    stem = re.sub(r'[\s_\-]+', '_', stem).strip('_')
+    if stem in ('icon', 'icons') or stem.startswith('icon_'):
+        return True
+    if stem.startswith('logo') or 'logo' in stem or 'favicon' in stem:
+        return True
+    return False
+
 def parse_descriptions():
     descs = {}
     text = Path('README.md').read_text(encoding='utf-8')
@@ -46,7 +57,7 @@ for d in sorted([d for d in root.iterdir() if d.is_dir()]):
     img_dir = d / 'images'
     if img_dir.exists():
         for f in sorted(img_dir.iterdir()):
-            if f.is_file() and is_image(f):
+            if f.is_file() and is_image(f) and not is_irrelevant(f.name):
                 images.append(f.name)
     if not images:
         continue
@@ -102,6 +113,44 @@ html = f"""<!DOCTYPE html>
   }}
   #search:focus {{ border-color: var(--accent); }}
   #count {{ color: var(--muted); font-size: 13px; margin-top: 8px; display: block; }}
+  header .toprow {{
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  }}
+  #mode-btn {{
+    background: var(--card); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 14px; font-size: 13px; cursor: pointer; flex-shrink: 0;
+  }}
+  #mode-btn:hover {{ border-color: var(--accent); }}
+  #mode-btn.collect {{ border-color: var(--accent); color: #fff; }}
+  /* Sidebar (collect mode) */
+  #sidebar {{
+    position: fixed; top: 0; right: -26%; right: 0;
+    width: min(26%, 360px); height: 100vh;
+    background: var(--card); border-left: 1px solid var(--border);
+    z-index: 60; transform: translateX(100%);
+    transition: transform .2s ease;
+    display: flex; flex-direction: column;
+    padding: 16px;
+  }}
+  #sidebar.visible {{ transform: translateX(0); }}
+  #sidebar h3 {{ font-size: 15px; font-weight: 700; flex-shrink: 0; }}
+  #sb-tools {{ display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-shrink: 0; }}
+  #sb-count {{ font-size: 12px; color: var(--muted); margin-right: auto; }}
+  #sb-text {{
+    flex: 1; margin-top: 10px;
+    background: #0d1017; color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px; font-size: 12px; font-family: ui-monospace, monospace;
+    resize: none; outline: none; line-height: 1.5; white-space: pre;
+  }}
+  #sb-text:focus {{ border-color: var(--accent); }}
+  .sb-btn {{
+    background: none; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 8px; font-size: 11px; cursor: pointer; flex-shrink: 0;
+  }}
+  .sb-btn:hover {{ border-color: var(--accent); color: #fff; }}
   main {{ padding: 8px 24px 40px; }}
   #grid {{
     display: grid;
@@ -122,6 +171,7 @@ html = f"""<!DOCTYPE html>
     object-fit: cover; display: block;
     background: #0b0d12;
   }}
+  .thumblink {{ display: block; }}
   .card .meta {{ padding: 12px 14px 14px; }}
   .card .repo {{ font-size: 14px; font-weight: 600; }}
   .card .desc {{
@@ -173,6 +223,7 @@ html = f"""<!DOCTYPE html>
   #lb-counter {{ color: var(--muted); font-size: 13px; min-width: 70px; text-align: center; }}
   #lb-filename {{ color: var(--muted); font-size: 11px; text-align: center; }}
   .empty {{ color: var(--muted); padding: 40px; text-align: center; grid-column: 1 / -1; }}
+  body.sidebar-open main {{ padding-right: min(26%, 360px); }}
   @media (max-width: 600px) {{
     #grid {{ grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }}
   }}
@@ -180,14 +231,27 @@ html = f"""<!DOCTYPE html>
 </head>
 <body>
 <header>
+  <div class="toprow">
+    <button id="mode-btn" type="button">Mode: link</button>
+    <span id="count"></span>
+  </div>
   <h1>Awesome TUIs <span>UI Gallery</span></h1>
   <p>Terminal user interface screenshots from <code>awesome-tuis</code></p>
   <input id="search" type="text" placeholder="Search projects…" autocomplete="off">
-  <span id="count"></span>
 </header>
 <main>
   <div id="grid"></div>
 </main>
+
+<div id="sidebar">
+  <h3>Collected project URLs</h3>
+  <div id="sb-tools">
+    <span id="sb-count">0</span>
+    <button class="sb-btn" id="sb-clear" type="button">Clear</button>
+    <button class="sb-btn" id="sb-close" type="button">Close</button>
+  </div>
+  <textarea id="sb-text" spellcheck="false" placeholder="Clicked project URLs will be listed here, one per line"></textarea>
+</div>
 
 <div id="overlay">
   <div id="lb-top">
@@ -214,12 +278,44 @@ const grid = document.getElementById('grid');
 const overlay = document.getElementById('overlay');
 const search = document.getElementById('search');
 const countEl = document.getElementById('count');
+const modeBtn = document.getElementById('mode-btn');
+const sidebar = document.getElementById('sidebar');
+const sbText = document.getElementById('sb-text');
+const sbCount = document.getElementById('sb-count');
 let current = null;
 let list = PROJECTS;
+let mode = 'link'; // 'link' | 'collect'
+let collected = [];
 
 function esc(s) {{
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }}
+
+function setMode(m) {{
+  mode = m;
+  modeBtn.textContent = mode === 'link' ? 'Mode: link' : 'Mode: collect URLs';
+  modeBtn.classList.toggle('collect', mode === 'collect');
+  sidebar.classList.toggle('visible', mode === 'collect');
+  document.body.classList.toggle('sidebar-open', mode === 'collect');
+  if (mode === 'collect') sbText.focus();
+}}
+
+function collectUrl(url) {{
+  if (!collected.includes(url)) {{
+    collected.push(url);
+    const val = sbText.value.trim();
+    sbText.value = val ? val + '\\n' + url : url;
+    sbCount.textContent = collected.length;
+  }}
+}}
+
+modeBtn.addEventListener('click', () => setMode(mode === 'link' ? 'collect' : 'link'));
+document.getElementById('sb-close').addEventListener('click', () => setMode('link'));
+document.getElementById('sb-clear').addEventListener('click', () => {{
+  collected = [];
+  sbText.value = '';
+  sbCount.textContent = '0';
+}});
 
 function render() {{
   grid.innerHTML = '';
@@ -233,11 +329,20 @@ function render() {{
     const card = document.createElement('div');
     card.className = 'card';
     card.innerHTML =
-      '<img class="thumb" src="projects/' + encodeURIComponent(p.name) + '/images/' + encodeURIComponent(p.images[0]) + '" alt="" loading="lazy">' +
+      '<a class="thumblink" href="https://github.com/' + p.repo + '" target="_blank" rel="noopener">' +
+      '<img class="thumb" src="projects/' + encodeURIComponent(p.name) + '/images/' + encodeURIComponent(p.images[0]) + '" alt="' + esc(p.repo) + ' preview" loading="lazy"></a>' +
       '<div class="meta"><div class="repo">' + esc(p.repo) + '</div>' +
       (p.desc ? '<div class="desc">' + esc(p.desc) + '</div>' : '') +
       '<div class="info">' + p.images.length + ' image' + (p.images.length > 1 ? 's' : '') + '</div></div>';
     card.addEventListener('click', () => openLightbox(p));
+    const thumbLink = card.querySelector('.thumblink');
+    if (thumbLink) thumbLink.addEventListener('click', (e) => {{
+      e.stopPropagation();
+      if (mode === 'collect') {{
+        e.preventDefault();
+        collectUrl('https://github.com/' + p.repo);
+      }}
+    }});
     grid.appendChild(card);
   }}
 }}
