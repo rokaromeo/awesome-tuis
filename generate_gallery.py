@@ -1,9 +1,22 @@
 import json
-import os
+import re
 from pathlib import Path
-from urllib.parse import quote
 
 VALID = {'.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp', '.ico'}
+
+def parse_descriptions():
+    descs = {}
+    text = Path('README.md').read_text(encoding='utf-8')
+    for line in text.splitlines():
+        m = re.match(r'^\s*-\s*\[[^\]]+\]\(https://github\.com/([^/]+/[^/)]+?)/?\):?\s+(.+?)\s*$', line)
+        if m:
+            repo = m.group(1).lower()
+            desc = m.group(2).strip()
+            if desc.startswith('-'):
+                desc = desc[1:].strip()
+            if desc:
+                descs[repo] = desc
+    return descs
 
 def is_image(path):
     try:
@@ -20,6 +33,7 @@ def is_image(path):
     return (head[:2] == b'\xff\xd8' or head[:4] == b'\x89PNG' or
             head[:6] in (b'GIF87a', b'GIF89a') or head[:4] == b'RIFF' or ext in {'.webp', '.bmp', '.ico'})
 
+descriptions = parse_descriptions()
 root = Path('projects')
 projects = []
 
@@ -40,6 +54,7 @@ for d in sorted([d for d in root.iterdir() if d.is_dir()]):
     projects.append({
         'name': d.name,
         'repo': repo,
+        'desc': descriptions.get(repo.lower(), ''),
         'readme': readme.name if readme else None,
         'images': images,
     })
@@ -90,8 +105,8 @@ html = f"""<!DOCTYPE html>
   main {{ padding: 8px 24px 40px; }}
   #grid {{
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-    gap: 14px;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 16px;
   }}
   .card {{
     background: var(--card);
@@ -103,13 +118,21 @@ html = f"""<!DOCTYPE html>
   }}
   .card:hover {{ transform: translateY(-2px); border-color: var(--accent); }}
   .thumb {{
-    width: 100%; aspect-ratio: 4 / 3;
+    width: 100%; aspect-ratio: 16 / 9;
     object-fit: cover; display: block;
     background: #0b0d12;
   }}
-  .card .meta {{ padding: 10px 12px 12px; }}
-  .card .repo {{ font-size: 13px; font-weight: 600; }}
-  .card .info {{ font-size: 11px; color: var(--muted); margin-top: 3px; }}
+  .card .meta {{ padding: 12px 14px 14px; }}
+  .card .repo {{ font-size: 14px; font-weight: 600; }}
+  .card .desc {{
+    font-size: 12px; color: var(--muted); line-height: 1.4;
+    margin-top: 4px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }}
+  .card .info {{ font-size: 11px; color: var(--muted); margin-top: 6px; }}
   /* Lightbox */
   #overlay {{
     display: none; position: fixed; inset: 0; z-index: 100;
@@ -212,6 +235,7 @@ function render() {{
     card.innerHTML =
       '<img class="thumb" src="projects/' + encodeURIComponent(p.name) + '/images/' + encodeURIComponent(p.images[0]) + '" alt="" loading="lazy">' +
       '<div class="meta"><div class="repo">' + esc(p.repo) + '</div>' +
+      (p.desc ? '<div class="desc">' + esc(p.desc) + '</div>' : '') +
       '<div class="info">' + p.images.length + ' image' + (p.images.length > 1 ? 's' : '') + '</div></div>';
     card.addEventListener('click', () => openLightbox(p));
     grid.appendChild(card);
